@@ -1,0 +1,120 @@
+#include <OneButton.h>
+#include "esp_sleep.h"
+
+#define BUTTON_PIN D0
+#define MOTOR_PIN  D1
+
+// Device states
+enum DeviceState { POWER_OFF, POWER_ON };
+enum Mode { TRACKING, TRAINING, THERAPY };
+RTC_DATA_ATTR DeviceState currentState = POWER_OFF;
+RTC_DATA_ATTR Mode currentMode = TRACKING;
+
+OneButton button(BUTTON_PIN, true);
+
+// ---------------- FUNCTION DEFINITIONS ----------------
+void tracking() {
+  Serial.println("Mode: TRACKING");
+  currentMode = TRACKING;
+}
+
+void training() {
+  Serial.println("Mode: TRAINING");
+  currentMode = TRAINING;
+}
+
+void therapy() {
+  Serial.println("Mode: THERAPY");
+  currentMode = THERAPY;
+}
+
+void alignWalk() {
+  Serial.println("alignWalk() function triggered");
+}
+
+void powerOff() {
+  Serial.println("Device OFF");
+  currentState = POWER_OFF;
+  analogWrite(MOTOR_PIN, 0);
+  esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+  esp_deep_sleep_start();
+}
+
+void bluetooth() {
+  Serial.println("Bluetooth Pairing Mode Triggered");
+}
+
+// ---------------- BUTTON HANDLERS ----------------
+void singleClick() {
+  if (currentState == POWER_OFF) {
+    currentState = POWER_ON;
+    tracking();  // start directly in tracking mode
+  } else {
+    // Cycle through modes
+    if (currentMode == TRACKING) {
+      training();
+    } else if (currentMode == TRAINING) {
+      therapy();
+    } else {
+      tracking();
+    }
+  }
+}
+
+void doubleClick() {
+  alignWalk();
+}
+
+void tripleClick() {
+  powerOff();
+}
+
+void longPress() {
+  bluetooth();
+}
+
+// ---------------- SETUP ----------------
+void setup() {
+  Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(MOTOR_PIN, OUTPUT);
+  analogWrite(MOTOR_PIN, 0);
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason != ESP_SLEEP_WAKEUP_GPIO) {
+    Serial.println("Initial boot. Device is OFF.");
+    powerOff();
+  }
+
+  Serial.println("Device woke up");
+
+  button.attachClick(singleClick);
+  button.attachDoubleClick(doubleClick);
+  button.attachLongPressStart(longPress);
+  button.attachMultiClick([]() {
+    if (button.getNumberClicks() == 3) tripleClick();
+  });
+}
+
+// ---------------- LOOP ----------------
+void loop() {
+  button.tick();
+
+  if (currentState != POWER_ON) return;
+
+  switch (currentMode) {
+    case TRACKING:
+      // Tracking logic (placeholder)
+      break;
+
+    case TRAINING:
+      // Training logic (placeholder)
+      break;
+
+    case THERAPY:
+      // Therapy logic (placeholder)
+      break;
+  }
+
+  delay(10);
+}
