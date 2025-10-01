@@ -1,0 +1,221 @@
+#include <OneButton.h>
+#include "esp_sleep.h"
+#include <math.h>
+#include <Wire.h>
+#include <Adafruit_LIS3DH.h>
+#include <Adafruit_Sensor.h>
+
+#define BUTTON_PIN D0
+#define MOTOR_PIN  D1
+#define SDA_PIN    D4
+#define SCL_PIN    D5
+
+// States and Modes
+enum DeviceState { POWER_OFF, POWER_ON };
+enum Mode { TRACKING, TRAINING, THERAPY };
+RTC_DATA_ATTR DeviceState currentState = POWER_OFF;
+RTC_DATA_ATTR Mode currentMode = TRACKING;
+
+OneButton button(BUTTON_PIN, true);
+
+// LIS3DH object
+Adafruit_LIS3DH lis = Adafruit_LIS3DH();
+
+// Therapy variables
+bool therapyActive = false;
+unsigned long therapyStart = 0;
+unsigned long lastTherapyEndTime = 0;
+const int THERAPY_DURATION = 180000; // 3 minutes
+
+// ---------------- FUNCTIONS ----------------
+void resetTherapy() {
+  therapyActive = false;
+  analogWrite(MOTOR_PIN, 0);   // <-- Make sure motor is OFF
+  lastTherapyEndTime = millis();
+}
+
+void tracking() {
+  Serial.println("Mode: TRACKING");
+  currentMode = TRACKING;
+  analogWrite(MOTOR_PIN, 0);   // <-- Ensure motor is OFF in tracking
+}
+
+void training() {
+  Serial.println("Mode: TRAINING");
+  currentMode = TRAINING;
+  analogWrite(MOTOR_PIN, 0);   // <-- Ensure motor is OFF in training
+}
+
+void therapy() {
+  Serial.println("Mode: THERAPY");
+  currentMode = THERAPY;
+  therapyActive = false; // reset state
+}
+
+void alignWalk() {
+  Serial.println("alignWalk() function triggered");
+  currentMode = TRAINING; // using training-style posture check
+}
+
+void powerOff() {
+  Serial.println("Device OFF");
+  currentState = POWER_OFF;
+  resetTherapy();
+  esp_deep_sleep_enable_gpio_wakeup(BIT(BUTTON_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+  esp_deep_sleep_start();
+}
+
+void bluetooth() {
+  Serial.println("Bluetooth Pairing Mode Triggered");
+}
+
+// ---------------- BUTTON HANDLERS ----------------
+void singleClick() {
+  if (currentState == POWER_OFF) {
+    currentState = POWER_ON;
+    tracking();  // start in tracking mode
+  } else {
+    if (currentMode == TRACKING) {
+      training();
+    } else if (currentMode == TRAINING) {
+      therapy();
+    } else {
+      tracking();
+    }
+  }
+}
+
+void doubleClick() {
+  alignWalk();
+}
+
+void tripleClick() {
+  powerOff();
+}
+
+void longPress() {
+  bluetooth();
+}
+
+// ---------------- SENSOR LOGIC ----------------
+bool isPostureWrong() {
+  sensors_event_t event;
+  lis.getEvent(&event);
+
+  float ax = event.acceleration.x;
+  float ay = event.acceleration.y;
+  float az = event.acceleration.z;
+
+  // Simple tilt angle
+  float angle = atan2(ay, az) * 180.0 / PI;
+
+  Serial.print("Tilt Angle: ");
+  Serial.println(angle);
+
+  // Threshold for wrong posture
+  if (abs(angle) < 45) {
+    return true;
+  }
+  return false;
+}
+
+// ---------------- SETUP ----------------
+void setup() {
+  Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(MOTOR_PIN, OUTPUT);
+  analogWrite(MOTOR_PIN, 0);
+
+  // Use D4/D5 for I2C
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  if (!lis.begin(0x18)) {   // Try 0x18 first
+    if (!lis.begin(0x19)) {
+      Serial.println("Could not find LIS3DH");
+      while (1);
+    }
+  }
+  Serial.println("LIS3DH detected!");
+  lis.setRange(LIS3DH_RANGE_2_G);
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason != ESP_SLEEP_WAKEUP_GPIO) {
+    Serial.println("Initial boot. Device is OFF.");
+    //powerOff();
+  }
+
+  Serial.println("Device woke up");
+
+  button.attachClick(singleClick);
+  button.attachDoubleClick(doubleClick);
+  button.attachLongPressStart(longPress);
+  button.attachMultiClick([]() {
+    if (button.getNumberClicks() == 3) tripleClick();
+  });
+}
+
+// ---------------- LOOP ----------------
+void loop() {
+  button.tick();
+
+  if (currentState != POWER_ON) return;
+
+  switch (currentMode) {
+    case TRACKING:
+      // Tracking placeholder
+      break;
+
+    case TRAINING:
+      if (isPostureWrong()) {
+        analogWrite(MOTOR_PIN, 120); // gentle vibration
+        Serial.println("Training: Wrong posture → vibration");
+      } else {
+        analogWrite(MOTOR_PIN, 0);
+      }
+      break;
+
+    case THERAPY:
+      // ---- Therapy logic ----
+      if (!therapyActive && millis() - lastTherapyEndTime >= 3000) {
+        therapyActive = true;
+        therapyStart = millis();
+        Serial.println("Therapy started - Phase 1");
+      }
+
+      if (therapyActive) {
+        unsigned long elapsed = millis() - therapyStart;
+
+        if (elapsed >= THERAPY_DURATION) {
+          Serial.println("Therapy complete - switching to Tracking mode");
+          resetTherapy();
+          tracking();
+          break;
+        }
+
+        if (elapsed < 60000) {
+          analogWrite(MOTOR_PIN, 120);
+          Serial.println("Phase 1: Gentle continuous vibration");
+        } 
+        else if (elapsed < 120000) {
+          if ((elapsed / 300) % 2 == 0) {
+            analogWrite(MOTOR_PIN, 200);
+            Serial.println("Phase 2: Pulse ON");
+          } else {
+            analogWrite(MOTOR_PIN, 0);
+            Serial.println("Phase 2: Pulse OFF");
+          }
+        } 
+        else {
+          float t = (elapsed - 120000) / 2000.0 * 2 * PI;
+          float wave = sin(t);
+          int intensity = map(wave * 100, -100, 100, 128, 180);
+          analogWrite(MOTOR_PIN, intensity);
+          Serial.print("Phase 3: Rhythmic wave intensity: ");
+          Serial.println(intensity);
+        }
+      }
+      break;
+  }
+
+  delay(50); // stable sensor loop
+}
